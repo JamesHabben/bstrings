@@ -68,7 +68,11 @@ namespace bstrings
                 .As("sql")
                 .WithDescription("Set a file path to output string into SQLite format");
 
-			p.Setup(arg => arg.GetAscii)
+            p.Setup(arg => arg.ShowOffset)
+                .As("offsets")
+                .WithDescription("Display offsets to strings");
+
+            p.Setup(arg => arg.GetAscii)
 				.As('a')
 				.SetDefault(true)
 				.WithDescription("If set, look for ASCII strings. Default is true. Use -a false to disable");
@@ -172,9 +176,10 @@ namespace bstrings
 			_sw = new Stopwatch();
 			_sw.Start();
 
-			var hits = new HashSet<string>();
+            //var hits = new HashSet<string>();
+            var hits = new HashSet<Dictionary<double, string>>();
 
-			var regPattern = p.Object.LookForRegex;
+            var regPattern = p.Object.LookForRegex;
 
 			if (_regExPatterns.ContainsKey(p.Object.LookForRegex))
 			{
@@ -292,18 +297,24 @@ namespace bstrings
 								var uh = GetUnicodeHits(chunk, minLength, maxLength);
 								foreach (var h in uh)
 								{
-									hits.Add(h);
+                                    //hits.Add(h);
+                                    Dictionary<double, string> d = new Dictionary<double, string>();
+                                    d.Add(p.Object.ShowOffset ? h.Key : 0, h.Value);
+                                    hits.Add(d);
 								}
 							}
 
 							if (p.Object.GetAscii)
 							{
-								var ah = GetAsciiHits(chunk, minLength, maxLength);
+								var ah = GetAsciiHits(chunk, minLength, maxLength, p.Object.ShowOffset);
 								foreach (var h in ah)
 								{
-									hits.Add(h);
-								}
-							}
+                                    //hits.Add(h);
+                                    Dictionary<double, string> d = new Dictionary<double, string>();
+                                    d.Add(p.Object.ShowOffset ? h.Key : 0, h.Value);
+                                    hits.Add(d);
+                                }
+                            }
 
 							if (!p.Object.Quiet)
 							{
@@ -331,15 +342,17 @@ namespace bstrings
 			{
 				var tempList = hits.ToList();
 				tempList.Sort();
-				hits = new HashSet<string>(tempList);
-			}
-			else if (p.Object.SortLength)
+                //hits = new HashSet<string>(tempList);
+                hits = new HashSet<Dictionary<double, string>>(tempList);
+            }
+            else if (p.Object.SortLength)
 			{
-				var tempList = SortByLength(hits.ToList()).ToList();
-				hits = new HashSet<string>(tempList);
-			}
+				//var tempList = SortByLength(hits.ToList()).ToList();
+                //hits = new HashSet<string>(tempList);
+                hits = (HashSet<Dictionary<double,string>>) hits.OrderBy(d => d.First().Value.Length);
+            }
 
-			var counter = 0;
+            var counter = 0;
 
 
 			//set up highlighting
@@ -369,7 +382,7 @@ namespace bstrings
                 //SQLiteConnection dbCon;
                 dbCon = new SQLiteConnection("Data Source='" + p.Object.SqliteOutput + "';Version=3;");
                 dbCon.Open();
-                string createTable = "create table strings (string TEXT, length INTEGER, ascii_only INTEGER default 0 ";
+                string createTable = "create table strings (string TEXT, offset INTEGER, length INTEGER, ascii_only INTEGER default 0 ";
                 /*string createCounts = "CREATE VIEW [counts] AS select " +
                                         "(select count(*) from strings) as total," +
                                         "(select count(*) from strings where ascii_only = 1) as ascii_only," +
@@ -413,7 +426,7 @@ namespace bstrings
 
 			foreach (var hit in hits)
 			{
-				if (hit.Length == 0)
+				if (hit.First().Value.Length == 0)
 				{
 					continue;
 				}
@@ -421,7 +434,7 @@ namespace bstrings
 				if (p.Object.LookForString.Length > 0 || p.Object.LookForRegex.Length > 0)
 				{
 					if (p.Object.LookForString.Length > 0 &&
-						hit.IndexOf(p.Object.LookForString, StringComparison.InvariantCultureIgnoreCase) >= 0)
+                        hit.First().Value.IndexOf(p.Object.LookForString, StringComparison.InvariantCultureIgnoreCase) >= 0)
 					{
 						counter += 1;
                         if (p.Object.SqliteOutput != string.Empty)
@@ -436,7 +449,7 @@ namespace bstrings
                     }
 					else if (p.Object.LookForRegex.Length > 0)
 					{
-						if (!reg.IsMatch(hit))
+						if (!reg.IsMatch(hit.First().Value))
 						{
 							continue;
 						}
@@ -497,14 +510,17 @@ namespace bstrings
 
         }
 
-        private static void DbInsertString (string hit, SQLiteConnection dbCon)
+        //private static void DbInsertString(string hit, SQLiteConnection dbCon)
+        private static void DbInsertString(Dictionary<double,string> hit, SQLiteConnection dbCon)
         {
-            string insertText1 = "INSERT INTO strings (string, length, ascii_only";
-            string insertText2 = ") VALUES (?," + hit.Length + "," + (IsAscii(hit)?1:0);
+            double key = hit.First().Key;
+            string value = hit.First().Value;
+            string insertText1 = "INSERT INTO strings (string, offset, length, ascii_only";
+            string insertText2 = ") VALUES (?," + key + "," + value.Length + "," + (IsAscii(value) ?1:0);
             foreach (KeyValuePair<string, string> re in _regExPatterns)
             {
                 Regex reg = new Regex(re.Value, RegexOptions.IgnoreCase | RegexOptions.IgnorePatternWhitespace);
-                if (reg.IsMatch(hit))
+                if (reg.IsMatch(value))
                 {
                     insertText1 += "," + re.Key;
                     insertText2 += ",1";
@@ -516,7 +532,7 @@ namespace bstrings
             SQLiteCommand dbCmd = new SQLiteCommand(insertText1 + insertText2, dbCon);
             SQLiteParameter data = new SQLiteParameter();
             dbCmd.Parameters.Add(data);
-            data.Value = hit;
+            data.Value = value;
             dbCmd.ExecuteNonQuery();
         }
 
@@ -683,39 +699,61 @@ namespace bstrings
 			}
 		}
 
-		private static IEnumerable<string> SortByLength(IEnumerable<string> e)
+		private static IEnumerable<Dictionary<double,string>> SortByLength(IEnumerable<Dictionary<double, string>> e)
 		{
 			var sorted = from s in e
-				orderby s.Length ascending
+				//orderby s.Length ascending
 				select s;
 			return sorted;
 		}
 
-		private static List<string> GetUnicodeHits(byte[] bytes, int minSize, int maxSize)
-		{
-			var maxString = maxSize == -1 ? "" : maxSize.ToString();
+        //private static List<string> GetUnicodeHits(byte[] bytes, int minSize, int maxSize)
+        private static Dictionary<int, string> GetUnicodeHits(byte[] bytes, int minSize, int maxSize)
+        {
+            var maxString = maxSize == -1 ? "" : maxSize.ToString();
 			var mi2 = string.Format("{0}{1}{2}{3}{4}", "{", minSize, ",", maxString, "}");
 
 			const string uniRange = "[\u0020-\u007E]";
 			var regUni = new Regex($"{uniRange}{mi2}");
 			var uniString = Encoding.Unicode.GetString(bytes);
 
-			return (from Match match in regUni.Matches(uniString) select match.Value.Trim()).ToList();
-		}
+            //return (from Match match in regUni.Matches(uniString) select match.Value.Trim()).ToList();
+            return (from Match match in regUni.Matches(uniString)
+                    select new {
+                        val = match.Value.Trim(),
+                        idx = match.Index
+                    }).ToDictionary(m => m.idx, m => m.val);
+        }
 
-		private static List<string> GetAsciiHits(byte[] bytes, int minSize, int maxSize)
-		{
-			var maxString = maxSize == -1 ? "" : maxSize.ToString();
+        //private static List<string> GetAsciiHits(byte[] bytes, int minSize, int maxSize)
+        private static Dictionary<int, string> GetAsciiHits(byte[] bytes, int minSize, int maxSize, bool showOffset)
+        {
+            var maxString = maxSize == -1 ? "" : maxSize.ToString();
 			var mi2 = string.Format("{0}{1}{2}{3}{4}", "{", minSize, ",", maxString, "}");
 
 			const string ascRange = "[\x20-\x7E]";
 			var regUni = new Regex($"{ascRange}{mi2}");
 			var uniString = Encoding.UTF8.GetString(bytes);
 
-			return (from Match match in regUni.Matches(uniString) select match.Value.Trim()).ToList();
-		}
+            //return (from Match match in regUni.Matches(uniString) select match.Value.Trim()).ToList();
+            if (showOffset == false)
+            {
+                return (from Match match in regUni.Matches(uniString)
+                        select new {
+                            val = match.Value.Trim(),
+                            idx = 0
+                        }).ToDictionary(m => m.idx, m => m.val);
+            }
+            return (from Match match in regUni.Matches(uniString)
+                    select new
+                    {
+                        val = match.Value.Trim(),
+                        idx = match.Index
+                    }).ToDictionary(m => m.idx, m => m.val);
 
-		private static void SetupNLog()
+        }
+
+        private static void SetupNLog()
 		{
 			var config = new LoggingConfiguration();
 			var loglevel = LogLevel.Info;
